@@ -1,24 +1,25 @@
 # Sticker Pack Search — Telegram Serverless
 
-A JavaScript bot for Telegram Serverless. Users can send `.packs penguin` or `/packs penguin` and navigate result pages with inline buttons.
+A JavaScript bot for Telegram Serverless. Users can send `.packs penguin` or `/packs penguin`, browse ten results per page, preview a pack through Telegram's Bot API, and open its add-pack link.
 
-## Architecture
+## How search works
+
+Telegram's Bot API does not provide global keyword search for sticker sets. The bot therefore searches a catalog snapshot derived from the public [StickerFinder project](https://github.com/Nukesor/sticker-finder).
 
 - `tgcloud/handlers/message.js`: `/start`, `/help`, `.packs`, `/packs`
-- `tgcloud/handlers/callback_query.js`: pagination callbacks
-- `tgcloud/lib/packs.js`: FStik directory adapter, normalization, ranking, cache, formatting
-- `tgcloud/schema.js`: SQLite-backed search cache
+- `tgcloud/handlers/callback_query.js`: pagination and on-demand preview
+- `tgcloud/lib/packs.js`: catalog fetch, ranking, cache, formatting
+- `tgcloud/schema.js`: SQLite-backed cache
+- `.github/workflows/build-catalog.yml`: imports the upstream PostgreSQL dump and publishes a compact JSON index to `catalog/packs.json`
 
-This uses Telegram Serverless's built-in Bot API, `fetch`, and database. It does not use Python, `aiogram`, `httpx`, or a VPS.
+The catalog is a snapshot from the upstream 2020 database dump. It is free to build and serve from GitHub, but it is not a live or exhaustive Telegram-wide index. Searches match pack names and titles; they do not search every sticker image or tag.
 
-## Requirements
+## First setup
 
-- Node.js 18+
-- A bot created with @BotFather
-- Telegram Serverless enabled for the bot in @BotFather
-- The CLI access token from BotFather → your bot → Serverless → CLI Access
-
-## Setup
+1. Push the repository to GitHub.
+2. Open **Actions → Build sticker catalog** and confirm the workflow succeeds. It should run automatically when the workflow is first added; you can also trigger it manually.
+3. Wait for the workflow's catalog commit. Confirm that `catalog/packs.json` exists.
+4. Install and authenticate Telegram Serverless:
 
 ```sh
 npm install
@@ -28,7 +29,7 @@ npx tgcloud push
 npx tgcloud migrate
 ```
 
-Review the schema migration prompt before confirming. Then test in Telegram with:
+Review the schema migration prompt before confirming. Then test in a real Telegram chat:
 
 ```text
 /start
@@ -36,24 +37,15 @@ Review the schema migration prompt before confirming. Then test in Telegram with
 /packs cute cat page 2
 ```
 
-You can test the message handler against the platform without deploying:
+A fake chat ID passed to `tgcloud run` can produce Telegram's `chat not found` error even when local handler execution works. Test message delivery in a real bot chat.
 
-```sh
-npx tgcloud run handlers/message '{ chat: { id: 123, type: "private" }, text: "/packs penguin" }'
-```
+## Catalog workflow
 
-## Provider
+The workflow downloads the upstream database dump, restores it into a temporary PostgreSQL service in GitHub Actions, exports safe sticker-pack names and titles to JSON, and commits the compact index. The 23 MB upstream dump is not copied into this repository. Re-running the workflow regenerates the index from the same upstream snapshot; it does not make that snapshot newer.
 
-The provider adapter calls the documented FStik endpoint:
+## Limitations
 
-`https://fstik.app/api/sticker-sets/search?type=search&query=...&public=true&safe=true&limit=50&skip=...`
-
-Provider availability, rate limits, and terms may change. If it fails, the bot returns a user-safe error. The adapter is isolated in `tgcloud/lib/packs.js` so a different permitted provider can replace it.
-
-## Important implementation notes
-
-- The Bot API does not expose global keyword search for sticker sets; the directory is the discovery layer.
-- This first release displays pack names and direct add links. The provider's example `file_id` values are not assumed to be valid for this bot, so it does not send potentially invalid sticker previews. Add previews after verifying discovered names with `getStickerSet` and choosing a UI that won't spam users with ten separate sticker messages.
-- The cache uses a 30-minute TTL.
-- Results are bounded and de-duplicated. The directory index is not guaranteed to cover every Telegram pack.
-- No comments or secrets are required in deployed code.
+- Results depend on the upstream catalog snapshot and may omit newer packs.
+- Preview buttons call Telegram's `getStickerSet` only when clicked. Invalid or deleted packs return a short callback notice instead of breaking search.
+- Search responses are cached for 30 minutes; the catalog payload is cached for six hours.
+- The upstream StickerFinder project is archived. Review its license and data provenance before extending or redistributing its source code or database.

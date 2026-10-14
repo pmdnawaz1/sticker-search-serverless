@@ -1,0 +1,70 @@
+name: Build sticker catalog
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-catalog.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: stickerfinder
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d stickerfinder"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Download upstream catalog snapshot
+        run: |
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/Nukesor/sticker-finder/main/misc/database_dump_2020_07_30.psql_dump \
+            --output /tmp/stickerfinder.dump
+
+      - name: Restore and export sticker-pack index
+        env:
+          PGPASSWORD: postgres
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stickerfinder
+        run: |
+          pg_restore --no-owner --no-privileges --exit-on-error \
+            --dbname="$DATABASE_URL" /tmp/stickerfinder.dump
+
+          psql "$DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 --no-align --tuples-only \
+            --command="SELECT COALESCE(json_agg(json_build_object('name', name, 'title', COALESCE(NULLIF(title, ''), name), 'animated', animated) ORDER BY title, name), '[]'::json) FROM sticker_set WHERE deleted IS FALSE AND banned IS FALSE AND reviewed IS TRUE" \
+            > catalog/packs.json
+
+          node --input-type=module -e "import fs from 'node:fs'; const packs = JSON.parse(fs.readFileSync('catalog/packs.json', 'utf8')); if (!Array.isArray(packs) || packs.length < 100) throw new Error('Catalog export looks incomplete: ' + packs.length + ' packs'); console.log('Exported ' + packs.length + ' sticker packs');"
+
+      - name: Commit catalog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog/packs.json
+          if git diff --cached --quiet; then
+            echo "Catalog has not changed."
+            exit 0
+          fi
+          git commit -m "chore: build sticker pack catalog"
+          git push
